@@ -47,25 +47,39 @@ public class BuildingService {
     private final Map<LocalDate, Integer> bookedPerDay = new ConcurrentHashMap<>();
     private final boolean verbose = false; // disable spam
 
+    /**
+     * Creates a new building service with the specified name and capacity.
+     *
+     * @param buildingName the unique name of this building
+     * @param capacityPerDay the maximum number of rooms available per day
+     */
     public BuildingService(String buildingName, int capacityPerDay) {
         this.buildingName = Objects.requireNonNull(buildingName);
         this.capacityPerDay = capacityPerDay;
     }
 
-    /** Boot the building: connect, announce, and start consuming commands. */
-    public void start() throws IOException, TimeoutException {
+    /**
+     * Starts the building service by connecting to RabbitMQ, setting up queues,
+     * and beginning to announce availability and handle reservation requests.
+     *
+     * @throws IOException if RabbitMQ connection fails
+     * @throws TimeoutException if connection times out
+     */    public void start() throws IOException, TimeoutException {
         connection = RabbitMQConfig.createConnection(
                 AppConfig.getRabbitHost(), AppConfig.getRabbitUser(), AppConfig.getRabbitPass());
         channel = connection.createChannel();
 
         declareTopology();
         announce(); // initial
-        startPeriodicAnnounce();   // <--- add this
+        startPeriodicAnnounce();
         subscribeInbox();
 
         System.out.printf("[Building %s] up. Capacity/day=%d%n", buildingName, capacityPerDay);
     }
 
+    /**
+     * Periodically announces building availability to rental agents
+     */
     private void startPeriodicAnnounce() {
         announcer = Executors.newSingleThreadScheduledExecutor();
         announcer.scheduleAtFixedRate(() -> {
@@ -79,8 +93,14 @@ public class BuildingService {
     }
 
 
+    /**
+     * Stops the building service and cleans up resources.
+     *
+     * @throws IOException if closing connections fails
+     * @throws TimeoutException if closing times out
+     */
     public void stop() throws IOException, java.util.concurrent.TimeoutException {
-        if (announcer != null) announcer.shutdownNow();  // <--- stop scheduler
+        if (announcer != null) announcer.shutdownNow();  // stop scheduler
         if (channel != null) channel.close();
         if (connection != null) connection.close();
         System.out.printf("[Building %s] down.%n", buildingName);
@@ -88,10 +108,13 @@ public class BuildingService {
 
 
 
-    // ----------------------------------------------------------------
-    // Topology
-    // ----------------------------------------------------------------
+    // topology
 
+    /**
+     * Declares the necessary exchanges and queues for this building.
+     *
+     * @throws IOException if topology setup fails
+     */
     private void declareTopology() throws IOException {
         // Fanout for building announcements
         channel.exchangeDeclare(Constants.BUILDINGS_FANOUT_EXCHANGE, BuiltinExchangeType.FANOUT, false);
@@ -106,16 +129,31 @@ public class BuildingService {
         channel.queueBind(inbox, Constants.BUILDING_DIRECT_EXCHANGE, rk);
     }
 
+    /**
+     * Sends an announcement to make agents aware of this building.
+     *
+     * @throws IOException if announcement fails
+     */
     private void announce() throws IOException {
         // Broadcast building name so RentalAgents discover/maintain registry
         channel.basicPublish(Constants.BUILDINGS_FANOUT_EXCHANGE, "", null, buildingName.getBytes());
         System.out.printf("[Building %s] announced on %s%n", buildingName, Constants.BUILDINGS_FANOUT_EXCHANGE);
     }
 
+    /**
+     * Gets the name of this building's inbox queue.
+     *
+     * @return the building-specific queue name
+     */
     private String buildingInboxQueue() {
         return "cr.building." + buildingName + ".inbox";
     }
 
+    /**
+     * Subscribes to this building's inbox to handle incoming messages.
+     *
+     * @throws IOException if subscription fails
+     */
     private void subscribeInbox() throws IOException {
         DeliverCallback cb = (tag, delivery) -> {
             WireMessage msg = MessageSerializer.deserialize(delivery.getBody());
@@ -132,10 +170,14 @@ public class BuildingService {
         System.out.printf("[Building %s] listening on %s%n", buildingName, buildingInboxQueue());
     }
 
-    // ----------------------------------------------------------------
-    // Message handling
-    // ----------------------------------------------------------------
+    // message handling
 
+    /**
+     * Routes incoming messages to the appropriate handler based on message type.
+     *
+     * @param msg the incoming message to handle
+     * @throws IOException if message processing fails
+     */
     private void handle(WireMessage msg) throws IOException {
         switch (msg.type()) {
             case BOOK_ROOM -> onBook(msg);
@@ -148,6 +190,12 @@ public class BuildingService {
         }
     }
 
+    /**
+     * Handles room booking requests by checking availability and creating reservations.
+     *
+     * @param msg the booking request message
+     * @throws IOException if reply fails to send
+     */
     private void onBook(WireMessage msg) throws IOException {
         String clientId = requireClientId(msg);
         if (!(msg.payload() instanceof BookingRequest req)) {
@@ -170,18 +218,18 @@ public class BuildingService {
         // Prepare the reservation object (id, timestamps, etc.)
         Reservation r = new Reservation(req.building(), req.rooms(), req.date(), req.hours());
 
-        // === Atomic capacity check + update ===
+        // atomic capacity check + update
         try {
             bookedPerDay.compute(req.date(), (d, used) -> {
                 int current = (used == null ? 0 : used);
-                // If adding these rooms exceeds capacity, abort atomically
+                // If adding these rooms exceeds capacity, abort
                 if (current + req.rooms() > capacityPerDay) {
                     throw OverCapacity.INSTANCE;
                 }
                 return current + req.rooms();
             });
         } catch (RuntimeException e) {
-            // Our marker exception means "no availability"
+            // handle over-capacity "no availability"
             if (e == OverCapacity.INSTANCE) {
                 reply(clientId, MessageType.BOOK_ROOM,
                         new BookingReply(false, null,
@@ -189,12 +237,10 @@ public class BuildingService {
                                         ", capacity " + capacityPerDay + ")"));
                 return;
             }
-            // Anything else is a real error
             throw e;
         }
 
-        // At this point capacity for the date has been incremented atomically.
-        // Record the reservation in authoritative state.
+        // store reservation
         reservations.put(r.id, r);
         status.put(r.id, ReservationStatus.PENDING);
 
@@ -205,6 +251,12 @@ public class BuildingService {
                 buildingName, r.id, clientId, r.rooms, r.date);
     }
 
+    /**
+     * Handles reservation confirmation requests.
+     *
+     * @param msg the confirmation request message
+     * @throws IOException if reply fails to send
+     */
     private void onConfirm(WireMessage msg) throws IOException {
         String clientId = requireClientId(msg);
 
@@ -242,6 +294,12 @@ public class BuildingService {
         System.out.printf("[Building %s] CONFIRMED %s for %s%n", buildingName, reservationId, clientId);
     }
 
+    /**
+     * Handles reservation cancellation requests.
+     *
+     * @param msg the cancellation request message
+     * @throws IOException if reply fails to send
+     */
     private void onCancel(WireMessage msg) throws IOException {
         String clientId = requireClientId(msg);
 
@@ -280,10 +338,16 @@ public class BuildingService {
         System.out.printf("[Building %s] CANCELED %s for %s%n", buildingName, reservationId, clientId);
     }
 
-    // ----------------------------------------------------------------
-    // Reply & helpers
-    // ----------------------------------------------------------------
+    // reply & helpers
 
+    /**
+     * Sends a reply message to a specific client's private queue.
+     *
+     * @param clientId the ID of the client to reply to
+     * @param type the type of the reply message
+     * @param payload the payload of the reply message
+     * @throws IOException if publishing fails
+     */
     private void reply(String clientId, MessageType type, BookingReply payload) throws IOException {
         WireMessage out = new WireMessage(type, buildingName, payload);
         String q = Constants.CLIENT_QUEUE_PREFIX + clientId;
@@ -293,6 +357,13 @@ public class BuildingService {
                 buildingName, clientId, type, payload.reservationNumber());
     }
 
+    /**
+     * Sends an error message to a specific client's private queue.
+     *
+     * @param clientId the ID of the client to reply to
+     * @param message the error message to send
+     * @throws IOException if publishing fails
+     */
     private void replyError(String clientId, String message) throws IOException {
         WireMessage err = new WireMessage(MessageType.ERROR, buildingName, message);
         String q = Constants.CLIENT_QUEUE_PREFIX + clientId;
@@ -302,13 +373,22 @@ public class BuildingService {
     }
 
     /**
-     * Extracts the clientId. Assumes RentalAgent preserved msg.sender as the original clientId.
-     * If your agent wraps/changes this, adapt this method to pull clientId from the wrapper payload.
+     * Extracts the client ID from a message.
+     * Assumes the sender field contains the original client ID.
+     *
+     * @param msg the message to extract from
+     * @return the client ID, or null if not available
      */
     private String extractClientId(WireMessage msg) {
         return msg.sender(); // expected to be the original client id
     }
 
+    /**
+     * Extracts the client ID from a message, ensuring it is not null or blank.
+     *
+     * @param msg the message to extract from
+     * @return the client ID, or throws an exception if not available
+     */
     private String requireClientId(WireMessage msg) {
         String id = extractClientId(msg);
         if (id == null || id.isBlank()) {
@@ -322,15 +402,15 @@ public class BuildingService {
      *  - String reservationId, or
      *  - ReservationRequest (if you have that type), or
      *  - Any wrapper you may use that contains a reservation id.
+     *
+     * @param payload the payload to extract from
+     * @return an Optional containing the reservation ID if found
      */
     private Optional<String> extractReservationId(Object payload) {
         if (payload instanceof String s && !s.isBlank()) {
             return Optional.of(s);
         }
         try {
-            // If you have your own ReservationRequest DTO: adapt package/name here.
-            // Example:
-            // if (payload instanceof ReservationRequest rr) return Optional.ofNullable(rr.reservationNumber());
             Class<?> cls = payload.getClass();
             var m = cls.getMethod("reservationNumber");
             Object val = m.invoke(payload);
@@ -339,6 +419,9 @@ public class BuildingService {
         return Optional.empty();
     }
 
+    /**
+     * Internal exception for handling over-capacity scenarios efficiently
+     */
     private static final class OverCapacity extends RuntimeException {
         static final OverCapacity INSTANCE = new OverCapacity();
         private OverCapacity() { super(null, null, false, false); } // no stacktrace for speed

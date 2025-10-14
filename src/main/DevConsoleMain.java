@@ -11,27 +11,62 @@ import java.util.Locale;
 import java.util.Scanner;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+/**
+ * Development console for testing the rental system interactively.
+ * Allows starting multiple agents, buildings, and clients in a single process
+ * and provides commands to simulate various booking scenarios.
+ */
 public class DevConsoleMain {
     private static final List<RentalAgent> agents = new CopyOnWriteArrayList<>();
     private static final List<BuildingService> buildings = new CopyOnWriteArrayList<>();
     private static ClientAgent client;
 
+    /**
+     * Main entry point for the development console.
+     * Starts initial agents, buildings, and a client, then provides
+     * an interactive command interface for testing.
+     *
+     * @param args command line arguments where:
+     *             args[0] = agent name (optional)
+     *             args[1] = building name (optional)
+     *             args[2] = building capacity (optional)
+     *             args[3] = client ID (optional)
+     * @throws Exception if any component fails to start
+     */
     public static void main(String[] args) throws Exception {
         String agentName = argOr(args, 0, "Agent1");
-        String building  = argOr(args, 1, "BuildingA");
-        int capacity     = Integer.parseInt(argOr(args, 2, "5"));
-        String clientId  = argOr(args, 3, "Client1");
+        String building = argOr(args, 1, "BuildingA");
+        int capacity = Integer.parseInt(argOr(args, 2, "5"));
+        String clientId = argOr(args, 3, "Client1");
 
         // Start actors in correct order
-        RentalAgent a = new RentalAgent(agentName); a.start(); agents.add(a);
-        BuildingService b = new BuildingService(building, capacity); b.start(); buildings.add(b);
-        client = new ClientAgent(clientId); client.start();
+        RentalAgent a = new RentalAgent(agentName);
+        a.start();
+        agents.add(a);
+        BuildingService b = new BuildingService(building, capacity);
+        b.start();
+        buildings.add(b);
+        client = new ClientAgent(clientId);
+        client.start();
 
         // Shutdown hook
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            try { if (client != null) client.stop(); } catch (Exception ignored) {}
-            for (RentalAgent ra : new ArrayList<>(agents)) { try { ra.stop(); } catch (Exception ignored) {} }
-            for (BuildingService bs : new ArrayList<>(buildings)) { try { bs.stop(); } catch (Exception ignored) {} }
+            try {
+                if (client != null) client.stop();
+            } catch (Exception ignored) {
+            }
+            for (RentalAgent ra : new ArrayList<>(agents)) {
+                try {
+                    ra.stop();
+                } catch (Exception ignored) {
+                }
+            }
+            for (BuildingService bs : new ArrayList<>(buildings)) {
+                try {
+                    bs.stop();
+                } catch (Exception ignored) {
+                }
+            }
         }));
 
         printHelp();
@@ -40,8 +75,8 @@ public class DevConsoleMain {
         Scanner sc = new Scanner(System.in);
         while (true) {
             System.out.print("> ");
-            if (!sc.hasNextLine()) { // EOF (Ctrl+D) or input closed
-                sleep(100); // small pause to avoid busy-loop on some consoles
+            if (!sc.hasNextLine()) {
+                sleep(100); // Brief pause if input is temporarily unavailable
                 continue;
             }
             String line = sc.nextLine().trim();
@@ -58,7 +93,10 @@ public class DevConsoleMain {
 
                     case "book" -> {
                         // book <building> <rooms> <hours> [yyyy-mm-dd]
-                        if (parts.length < 4) { System.out.println("Usage: book <b> <rooms> <hours> [yyyy-mm-dd]"); break; }
+                        if (parts.length < 4) {
+                            System.out.println("Usage: book <b> <rooms> <hours> [yyyy-mm-dd]");
+                            break;
+                        }
                         String bld = parts[1];
                         int rooms = Integer.parseInt(parts[2]);
                         int hours = Integer.parseInt(parts[3]);
@@ -68,29 +106,42 @@ public class DevConsoleMain {
 
                     case "confirm" -> {
                         // confirm <building> <reservationId>
-                        if (parts.length < 3) { System.out.println("Usage: confirm <b> <reservationId>"); break; }
+                        if (parts.length < 3) {
+                            System.out.println("Usage: confirm <b> <reservationId>");
+                            break;
+                        }
                         client.confirmReservation(parts[1], parts[2]);
                     }
 
                     case "cancel" -> {
                         // cancel <building> <reservationId>
-                        if (parts.length < 3) { System.out.println("Usage: cancel <b> <reservationId>"); break; }
+                        if (parts.length < 3) {
+                            System.out.println("Usage: cancel <b> <reservationId>");
+                            break;
+                        }
                         client.cancelReservation(parts[1], parts[2]);
                     }
 
                     case "add-agent" -> {
                         // add-agent [name]
                         String name = (parts.length >= 2) ? parts[1] : ("Agent" + (agents.size() + 1));
-                        RentalAgent ra = new RentalAgent(name); ra.start(); agents.add(ra);
+                        RentalAgent ra = new RentalAgent(name);
+                        ra.start();
+                        agents.add(ra);
                         System.out.println("[Dev] Added agent: " + name);
                     }
 
                     case "add-building" -> {
                         // add-building <name> <capacity>
-                        if (parts.length < 3) { System.out.println("Usage: add-building <name> <capacity>"); break; }
+                        if (parts.length < 3) {
+                            System.out.println("Usage: add-building <name> <capacity>");
+                            break;
+                        }
                         String name = parts[1];
                         int cap = Integer.parseInt(parts[2]);
-                        BuildingService bs = new BuildingService(name, cap); bs.start(); buildings.add(bs);
+                        BuildingService bs = new BuildingService(name, cap);
+                        bs.start();
+                        buildings.add(bs);
                         System.out.printf("[Dev] Added building: %s (cap %d)%n", name, cap);
                     }
 
@@ -101,7 +152,7 @@ public class DevConsoleMain {
 
                     case "exit", "quit", "q" -> {
                         System.out.println("[Dev] Bye.");
-                        return; // triggers shutdown hook
+                        return; // Triggers shutdown hook
                     }
 
                     default -> System.out.println("Unknown command. Type 'help'.");
@@ -112,6 +163,9 @@ public class DevConsoleMain {
         }
     }
 
+    /**
+     * Displays available commands and their usage.
+     */
     private static void printHelp() {
         System.out.println("""
                 Commands:
@@ -127,6 +181,27 @@ public class DevConsoleMain {
                 """);
     }
 
-    private static String argOr(String[] args, int i, String def) { return (i < args.length) ? args[i] : def; }
-    private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException ignored) {} }
+    /**
+     * Gets command line argument or returns default value.
+     *
+     * @param args the command line arguments array
+     * @param i    the index of the argument to retrieve
+     * @param def  the default value if argument is not present
+     * @return the argument value or default
+     */
+    private static String argOr(String[] args, int i, String def) {
+        return (i < args.length) ? args[i] : def;
+    }
+
+    /**
+     * Pauses execution for the specified time.
+     *
+     * @param ms the number of milliseconds to sleep
+     */
+    private static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException ignored) {
+        }
+    }
 }

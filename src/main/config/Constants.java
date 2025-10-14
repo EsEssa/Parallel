@@ -1,6 +1,13 @@
 package main.config;
 
+/**
+ * Centralized configuration for RabbitMQ messaging constants.
+ * Contains all queue names, exchange names, and routing patterns
+ * used throughout the application.
+ */
 public final class Constants {
+
+    // Private constructor to prevent instantiation
     private Constants() {}
 
     // Queues

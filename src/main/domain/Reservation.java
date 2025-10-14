@@ -8,11 +8,13 @@ import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Reservation entity owned by a BuildingService instance.
- * Reservation IDs are generated here (UUID) and are unique within the system.
+ * Represents a room reservation in the booking system.
+ * Each reservation is uniquely identified and contains details
+ * about the building, room count, date, and duration.
  */
 public class Reservation implements Serializable {
-    @Serial private static final long serialVersionUID = 1L;
+    @Serial
+    private static final long serialVersionUID = 1L;
 
     public final String id;
     public final String building;
@@ -21,6 +23,15 @@ public class Reservation implements Serializable {
     public final int hours;
     public final Instant createdAt;
 
+    /**
+     * Creates a new reservation with automatically generated unique ID.
+     *
+     * @param building the building name where reservation is made
+     * @param rooms the number of rooms to reserve
+     * @param date the date of the reservation
+     * @param hours the duration in hours
+     * @throws NullPointerException if building or date is null
+     */
     public Reservation(String building, int rooms, LocalDate date, int hours) {
         this.id = UUID.randomUUID().toString();
         this.building = Objects.requireNonNull(building);
@@ -30,6 +41,11 @@ public class Reservation implements Serializable {
         this.createdAt = Instant.now();
     }
 
+    /**
+     * Returns a string representation of the reservation.
+     *
+     * @return formatted string containing reservation details
+     */
     @Override
     public String toString() {
         return "Reservation{id='%s', building='%s', rooms=%d, date=%s, hours=%d}"
