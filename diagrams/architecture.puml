@@ -2,7 +2,7 @@
 !theme plain
 title ConferenceRent System Architecture
 
-' Define components
+' components
 package "Client Layer" {
     [ClientAgent] as Client
 }
@@ -24,7 +24,7 @@ package "Message Broker" {
     component "cr.building.direct" as DirectExchange
 }
 
-' Define relationships
+' relationships
 Client --> AgentQueue : sends requests
 AgentQueue --> Agent : consumes (round-robin)
 Agent --> DirectExchange : forwards to building
