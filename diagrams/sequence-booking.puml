@@ -1,0 +1,49 @@
+@startuml
+!theme plain
+title Room Booking Sequence
+
+actor Client
+participant "ClientAgent" as CA
+queue "cr.agents.inbox" as AQ
+participant "RentalAgent" as RA
+queue "cr.building.direct" as BE
+participant "BuildingService" as BS
+queue "cr.client.<id>" as CQ
+
+== Booking Request ==
+Client -> CA: bookRoom(building, rooms, date, hours)
+CA -> AQ: BOOK_ROOM request
+AQ -> RA: consume message
+RA -> RA: validate building exists
+RA -> BE: forward to building
+BE -> BS: route by building name
+BS -> BS: check capacity atomically
+BS -> BS: create PENDING reservation
+BS -> CQ: BOOK_ROOM reply (success + reservationId)
+CQ -> CA: receive reply
+CA -> Client: return reservation details
+
+== Confirmation ==
+Client -> CA: confirmReservation(building, reservationId)
+CA -> AQ: CONFIRM_RESERVATION request
+AQ -> RA: consume message
+RA -> BE: forward to building
+BE -> BS: route by building name
+BS -> BS: change status PENDING → CONFIRMED
+BS -> CQ: CONFIRM_RESERVATION reply (success)
+CQ -> CA: receive reply
+CA -> Client: confirmation success
+
+== Cancellation ==
+Client -> CA: cancelReservation(building, reservationId)
+CA -> AQ: CANCEL_RESERVATION request
+AQ -> RA: consume message
+RA -> BE: forward to building
+BE -> BS: route by building name
+BS -> BS: change status → CANCELED
+BS -> BS: free capacity
+BS -> CQ: CANCEL_RESERVATION reply (success)
+CQ -> CA: receive reply
+CA -> Client: cancellation success
+
+@enduml

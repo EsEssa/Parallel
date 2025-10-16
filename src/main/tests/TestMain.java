@@ -132,7 +132,6 @@ public class TestMain {
 
         // Use a future date to avoid conflicts with other tests
         LocalDate date = LocalDate.now().plusDays(2);
-
         ClientAgent c1 = new ClientAgent("RaceC1");
         c1.start();
         ClientAgent c2 = new ClientAgent("RaceC2");
@@ -141,29 +140,34 @@ public class TestMain {
         c1.clearReplies();
         c2.clearReplies();
 
-        // Execute concurrent booking requests
-        ExecutorService pool = Executors.newFixedThreadPool(2);
-        Future<?> f1 = pool.submit(() -> {
-            try {
-                c1.bookRoom("BuildingA", 1, date, 1);
-            } catch (Exception ignored) {}
-        });
-        Future<?> f2 = pool.submit(() -> {
-            try {
-                c2.bookRoom("BuildingA", 1, date, 1);
-            } catch (Exception ignored) {}
-        });
-        f1.get();
-        f2.get();
+        WireMessage r1;
+        WireMessage r2;
 
-        // Collect responses from both clients
-        WireMessage r1 = c1.waitForReply(3000);
-        WireMessage r2 = c2.waitForReply(3000);
+        // Execute concurrent booking requests
+        try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
+            Future<?> f1 = pool.submit(() -> {
+                try {
+                    c1.bookRoom("BuildingA", 1, date, 1);
+                } catch (Exception ignored) {
+                }
+            });
+            Future<?> f2 = pool.submit(() -> {
+                try {
+                    c2.bookRoom("BuildingA", 1, date, 1);
+                } catch (Exception ignored) {
+                }
+            });
+            f1.get();
+            f2.get();
+
+            // Collect responses from both clients
+            r1 = c1.waitForReply(3000);
+            r2 = c2.waitForReply(3000);
+        }
 
         // Cleanup
         c1.stop();
         c2.stop();
-        pool.shutdownNow();
 
         // Count successes and failures
         int successes = 0, failures = 0;

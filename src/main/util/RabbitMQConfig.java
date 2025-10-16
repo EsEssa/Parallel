@@ -39,7 +39,6 @@ public final class RabbitMQConfig {
     }
 
     /**
-     * Declares the common exchanges used by all system components.
      * Should be called once per channel during initialization.
      *
      * @param ch the channel to use for declaration
@@ -47,8 +46,9 @@ public final class RabbitMQConfig {
      */
     public static void declareCommonExchanges(Channel ch) {
         try {
-            ch.exchangeDeclare(Constants.BUILDINGS_FANOUT_EXCHANGE, BuiltinExchangeType.FANOUT, false);
-            ch.exchangeDeclare(Constants.BUILDING_DIRECT_EXCHANGE,  BuiltinExchangeType.DIRECT, false);
+            // Make exchanges durable (survive broker restarts)
+            ch.exchangeDeclare(Constants.BUILDINGS_FANOUT_EXCHANGE, BuiltinExchangeType.FANOUT, true, false, false, null);
+            ch.exchangeDeclare(Constants.BUILDING_DIRECT_EXCHANGE, BuiltinExchangeType.DIRECT, true, false, false, null);
         } catch (Exception e) {
             throw new RuntimeException("declareCommonExchanges failed: " + e.getMessage(), e);
         }
@@ -57,13 +57,14 @@ public final class RabbitMQConfig {
     /**
      * Ensures the shared client-to-agent inbox queue exists.
      * Multiple agents can consume from this queue for load distribution.
-     *
+     * Made durable for fault tolerance.
      * @param ch the channel to use for declaration
      * @throws RuntimeException if queue declaration fails
      */
     public static void declareAgentInbox(Channel ch) {
         try {
-            ch.queueDeclare(Constants.AGENT_INBOX_QUEUE, false, false, false, null);
+            // Make durable (survive broker restarts)
+            ch.queueDeclare(Constants.AGENT_INBOX_QUEUE, true, false, false, null);
         } catch (Exception e) {
             throw new RuntimeException("declareAgentInbox failed: " + e.getMessage(), e);
         }
@@ -91,6 +92,7 @@ public final class RabbitMQConfig {
     /**
      * Declares and binds a building-specific inbox queue to the direct exchange.
      * Each building has its own queue for receiving commands.
+     * Made durable for fault tolerance.
      *
      * @param ch the channel to use for declaration and binding
      * @param buildingName the name of the building
@@ -101,7 +103,8 @@ public final class RabbitMQConfig {
         try {
             String q  = Constants.buildingInboxQueue(buildingName);
             String rk = Constants.buildingRoutingKey(buildingName);
-            ch.queueDeclare(q, false, false, false, null);
+            // Make durable (survive broker restarts)
+            ch.queueDeclare(q, true, false, false, null);
             ch.queueBind(q, Constants.BUILDING_DIRECT_EXCHANGE, rk);
             return q;
         } catch (Exception e) {

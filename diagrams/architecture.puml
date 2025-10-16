@@ -1,0 +1,54 @@
+@startuml
+!theme plain
+title ConferenceRent System Architecture
+
+' Define components
+package "Client Layer" {
+    [ClientAgent] as Client
+}
+
+package "Agent Layer" {
+    [RentalAgent] as Agent
+}
+
+package "Building Layer" {
+    [BuildingService] as Building
+}
+
+package "Message Broker" {
+    queue "cr.agents.inbox" as AgentQueue
+    queue "cr.client.<id>" as ClientQueue
+    queue "cr.building.<name>.inbox" as BuildingQueue
+    
+    component "cr.buildings.fanout" as FanoutExchange
+    component "cr.building.direct" as DirectExchange
+}
+
+' Define relationships
+Client --> AgentQueue : sends requests
+AgentQueue --> Agent : consumes (round-robin)
+Agent --> DirectExchange : forwards to building
+DirectExchange --> BuildingQueue : routes by name
+BuildingQueue --> Building : consumes
+Building --> ClientQueue : replies directly
+ClientQueue --> Client : receives replies
+
+Building --> FanoutExchange : announces availability
+FanoutExchange --> Agent : discovers buildings
+
+note right of AgentQueue
+  Shared queue for load balancing
+  Multiple agents consume round-robin
+end note
+
+note right of ClientQueue
+  Private queue per client
+  Auto-delete when client disconnects
+end note
+
+note right of FanoutExchange
+  Broadcasts building announcements
+  Agents subscribe to discover buildings
+end note
+
+@enduml

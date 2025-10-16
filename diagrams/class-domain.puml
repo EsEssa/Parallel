@@ -1,0 +1,80 @@
+@startuml
+!theme plain
+title Domain Model
+
+class WireMessage {
+    - type: MessageType
+    - sender: String
+    - payload: Object
+    + type(): MessageType
+    + sender(): String
+    + payload(): Object
+}
+
+enum MessageType {
+    REQUEST_BUILDINGS
+    RESPONSE_BUILDINGS
+    BOOK_ROOM
+    CONFIRM_RESERVATION
+    CANCEL_RESERVATION
+    ERROR
+}
+
+class BookingRequest {
+    - building: String
+    - rooms: Integer
+    - date: LocalDate
+    - hours: Integer
+    - reservationNumber: String
+    + building(): String
+    + rooms(): Integer
+    + date(): LocalDate
+    + hours(): Integer
+    + reservationNumber(): String
+}
+
+class BookingReply {
+    - success: boolean
+    - reservationNumber: String
+    - message: String
+    + success(): boolean
+    + reservationNumber(): String
+    + message(): String
+}
+
+class Reservation {
+    + id: String
+    + building: String
+    + rooms: int
+    + date: LocalDate
+    + hours: int
+    + createdAt: Instant
+}
+
+enum ReservationStatus {
+    PENDING
+    CONFIRMED
+    CANCELED
+}
+
+WireMessage --> MessageType : uses
+WireMessage --> BookingRequest : payload
+WireMessage --> BookingReply : payload
+Reservation --> ReservationStatus : has status
+
+note right of WireMessage
+  Message envelope for all
+  RabbitMQ communication
+end note
+
+note right of BookingRequest
+  Used for booking, confirm,
+  and cancel operations
+end note
+
+note right of Reservation
+  Internal state in
+  BuildingService
+end note
+
+@enduml

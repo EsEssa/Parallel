@@ -1,0 +1,75 @@
+@startuml
+!theme plain
+title Deployment Diagram
+
+node "RabbitMQ Broker" {
+    component "Exchanges" {
+        [cr.buildings.fanout]
+        [cr.building.direct]
+    }
+    
+    component "Queues" {
+        [cr.agents.inbox]
+        [cr.building.BuildingA.inbox]
+        [cr.client.Client1]
+        [cr.client.Client2]
+    }
+}
+
+node "Agent Process 1" {
+    [RentalAgent1]
+}
+
+node "Agent Process 2" {
+    [RentalAgent2]
+}
+
+node "Building Process A" {
+    [BuildingService A]
+}
+
+node "Building Process B" {
+    [BuildingService B]
+}
+
+node "Client Process 1" {
+    [ClientAgent1]
+}
+
+node "Client Process 2" {
+    [ClientAgent2]
+}
+
+RentalAgent1 --> [cr.agents.inbox] : consumes
+RentalAgent2 --> [cr.agents.inbox] : consumes
+RentalAgent1 --> [cr.building.direct] : publishes
+RentalAgent2 --> [cr.building.direct] : publishes
+
+[BuildingService A] --> [cr.buildings.fanout] : announces
+[BuildingService B] --> [cr.buildings.fanout] : announces
+[BuildingService A] --> [cr.building.BuildingA.inbox] : consumes
+
+ClientAgent1 --> [cr.agents.inbox] : publishes
+ClientAgent2 --> [cr.agents.inbox] : publishes
+ClientAgent1 --> [cr.client.Client1] : consumes
+ClientAgent2 --> [cr.client.Client2] : consumes
+
+note bottom of "RabbitMQ Broker"
+  Central message broker
+  Runs on localhost:5672
+  Management UI: localhost:15672
+end note
+
+note right of "Agent Process 1"
+  Multiple agents for
+  load balancing
+  Round-robin consumption
+end note
+
+note right of "Building Process A"
+  Each building runs
+  independently
+  Dynamic discovery
+end note
+
+@enduml

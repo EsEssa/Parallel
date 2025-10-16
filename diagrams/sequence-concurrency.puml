@@ -1,0 +1,58 @@
+@startuml
+!theme plain
+title Concurrent Booking with Capacity Control
+
+participant "Client1" as C1
+participant "Client2" as C2
+participant "RentalAgent" as RA
+participant "BuildingService" as BS
+database "bookedPerDay" as DB
+
+note over BS
+  Capacity = 1 room
+  Date: 2025-10-18
+end note
+
+== Concurrent Booking Requests ==
+C1 -> RA: BOOK_ROOM (1 room)
+C2 -> RA: BOOK_ROOM (1 room)
+
+RA -> BS: forward request from Client1
+RA -> BS: forward request from Client2
+
+== Atomic Capacity Check ==
+BS -> DB: compute(date, lambda)
+note right
+  Atomic operation using
+  ConcurrentHashMap.compute()
+end note
+
+alt Client1 arrives first
+    DB -> DB: current = 0
+    DB -> DB: current + 1 = 1 <= capacity
+    DB -> DB: update to 1
+    BS -> C1: SUCCESS (reservationId)
+    
+    DB -> DB: current = 1
+    DB -> DB: current + 1 = 2 > capacity
+    DB -> DB: throw OverCapacity
+    BS -> C2: FAILURE (no availability)
+else Client2 arrives first
+    DB -> DB: current = 0
+    DB -> DB: current + 1 = 1 <= capacity
+    DB -> DB: update to 1
+    BS -> C2: SUCCESS (reservationId)
+    
+    DB -> DB: current = 1
+    DB -> DB: current + 1 = 2 > capacity
+    DB -> DB: throw OverCapacity
+    BS -> C1: FAILURE (no availability)
+end
+
+note over BS
+  Result: Exactly 1 success, 1 failure
+  No race conditions
+  Capacity correctly enforced
+end note
+
+@enduml

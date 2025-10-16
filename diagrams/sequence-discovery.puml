@@ -1,0 +1,38 @@
+@startuml
+!theme plain
+title Building Discovery Sequence
+
+participant "BuildingService" as BS
+participant "cr.buildings.fanout" as FE
+participant "RentalAgent" as RA
+participant "ClientAgent" as CA
+queue "cr.agents.inbox" as AQ
+queue "cr.client.<id>" as CQ
+
+== Building Startup ==
+BS -> BS: start()
+BS -> FE: announce building name
+note right: Initial announcement
+BS -> BS: startPeriodicAnnounce()
+note right: Re-announce every 10 seconds
+
+== Agent Discovery ==
+FE -> RA: broadcast building name
+RA -> RA: add to knownBuildings set
+RA -> RA: log "discovered building"
+
+== Periodic Heartbeat ==
+loop Every 10 seconds
+    BS -> FE: announce building name
+    FE -> RA: broadcast building name
+    RA -> RA: update buildingLastSeen timestamp
+end
+
+== Client Requests Building List ==
+CA -> AQ: REQUEST_BUILDINGS
+AQ -> RA: consume message
+RA -> RA: get knownBuildings list
+RA -> CQ: RESPONSE_BUILDINGS (list of buildings)
+CQ -> CA: receive building list
+
+@enduml

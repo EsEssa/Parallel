@@ -1,0 +1,31 @@
+@startuml
+!theme plain
+title Reservation State Machine
+
+[*] --> PENDING : BOOK_ROOM\n(capacity reserved)
+
+PENDING --> CONFIRMED : CONFIRM_RESERVATION
+PENDING --> CANCELED : CANCEL_RESERVATION
+PENDING --> CANCELED : Auto-timeout\n(5 minutes)
+
+CONFIRMED --> CANCELED : CANCEL_RESERVATION
+
+CANCELED --> [*]
+
+note right of PENDING
+  Provisional hold
+  Capacity is locked
+  Awaiting confirmation
+end note
+
+note right of CONFIRMED
+  Finalized reservation
+  Capacity remains locked
+end note
+
+note right of CANCELED
+  Reservation released
+  Capacity freed
+end note
+
+@enduml

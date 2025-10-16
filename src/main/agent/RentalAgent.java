@@ -22,7 +22,7 @@ public class RentalAgent {
     // learned from building fanout announcements
     private final Set<String> knownBuildings = ConcurrentHashMap.newKeySet();
     private final Map<String, Long> buildingLastSeen = new ConcurrentHashMap<>();
-    private boolean verbose = false; // set true if you want periodic "still alive" logs
+    private final boolean verbose = false; // set true if you want periodic "still alive" logs
     private static final long HEARTBEAT_LOG_MS = 60_000; // log at most once per minute per building
 
 
@@ -70,14 +70,11 @@ public class RentalAgent {
 
     // sets up RabbitMQ exchanges and queues
     private void declareTopology(Channel ch) throws IOException {
-        // shared client->agent queue (multiple agents consume round-robin)
-        ch.queueDeclare(Constants.AGENT_INBOX_QUEUE, false, false, false, null);
+        // Declare common exchanges
+        RabbitMQConfig.declareCommonExchanges(ch);
 
-        // fanout for building announcements
-        ch.exchangeDeclare(Constants.BUILDINGS_FANOUT_EXCHANGE, BuiltinExchangeType.FANOUT, false);
-
-        // direct exchange for building-specific commands
-        ch.exchangeDeclare(Constants.BUILDING_DIRECT_EXCHANGE, BuiltinExchangeType.DIRECT, false);
+        // Declare shared client->agent queue (multiple agents consume round-robin)
+        RabbitMQConfig.declareAgentInbox(ch);
     }
 
     // subscriptions
@@ -123,16 +120,23 @@ public class RentalAgent {
      */
     private void subscribeClientInbox(Channel ch) throws IOException {
         DeliverCallback cb = (tag, delivery) -> {
-            WireMessage msg = MessageSerializer.deserialize(delivery.getBody());
             try {
+                WireMessage msg = MessageSerializer.deserialize(delivery.getBody());
                 handleClientMessage(msg);
+                // Acknowledge successful processing
+                ch.basicAck(delivery.getEnvelope().getDeliveryTag(), false);
             } catch (Exception e) {
-                System.err.printf("[Agent %s] error handling %s: %s%n", agentName, msg.type(), e.getMessage());
-                // best-effort error back to client
-                safeErrorReply(msg.sender(), "Internal error at agent");
+                System.err.printf("[Agent %s] error handling message: %s%n", agentName, e.getMessage());
+                // Reject and requeue for retry (or use false to send to DLQ if configured)
+                try {
+                    ch.basicNack(delivery.getEnvelope().getDeliveryTag(), false, true);
+                } catch (IOException ioEx) {
+                    System.err.printf("[Agent %s] Failed to nack message: %s%n", agentName, ioEx.getMessage());
+                }
             }
         };
-        ch.basicConsume(Constants.AGENT_INBOX_QUEUE, true, cb, tag -> {
+        // Set autoAck to false for manual acknowledgment
+        ch.basicConsume(Constants.AGENT_INBOX_QUEUE, false, cb, tag -> {
         });
         System.out.printf("[Agent %s] listening on %s%n", agentName, Constants.AGENT_INBOX_QUEUE);
     }
@@ -173,7 +177,7 @@ public class RentalAgent {
             replyError(msg.sender(), "Invalid payload for BOOK_ROOM");
             return;
         }
-        if (!isKnown(req.building())) {
+        if (isUnknown(req.building())) {
             replyError(msg.sender(), "Unknown building: " + req.building());
             return;
         }
@@ -188,7 +192,7 @@ public class RentalAgent {
      */
     private void handleConfirm(WireMessage msg) throws IOException {
         if (msg.payload() instanceof BookingRequest req) {
-            if (!isKnown(req.building())) {
+            if (isUnknown(req.building())) {
                 replyError(msg.sender(), "Unknown building: " + req.building());
                 return;
             }
@@ -207,13 +211,13 @@ public class RentalAgent {
 
     private void handleCancel(WireMessage msg) throws IOException {
         if (msg.payload() instanceof BookingRequest r) {
-            if (!isKnown(r.building())) {
+            if (isUnknown(r.building())) {
                 replyError(msg.sender(), "Unknown building: " + r.building());
                 return;
             }
             forwardToBuilding(r.building(), msg);
-        } else if (msg.payload() instanceof String onlyReservationNumber) {
-            replyError(msg.sender(), "Cancel needs building + reservationNumber (ReservationRequest), not just the id");
+        } else if (msg.payload() instanceof String) {
+            replyError(msg.sender(), "Cancel needs building + reservationNumber (BookingRequest), not just the id");
         } else {
             replyError(msg.sender(), "Invalid payload for CANCEL_RESERVATION");
         }
@@ -222,13 +226,13 @@ public class RentalAgent {
     // helpers
 
     /**
-     * Checks if a building is known to the agent.
+     * Checks if a building is unknown to the agent.
      *
      * @param building the building name to check
-     * @return true if the building is known, false otherwise
+     * @return true if the building is unknown, false otherwise
      */
-    private boolean isKnown(String building) {
-        return building != null && knownBuildings.contains(building);
+    private boolean isUnknown(String building) {
+        return building == null || !knownBuildings.contains(building);
     }
 
     /**
@@ -244,7 +248,8 @@ public class RentalAgent {
         WireMessage forwarded = original;
         byte[] body = MessageSerializer.serialize(forwarded);
         String rk = Constants.RK_BUILDING_PREFIX + buildingName;
-        channel.basicPublish(Constants.BUILDING_DIRECT_EXCHANGE, rk, null, body);
+        // Make message persistent for fault tolerance
+        channel.basicPublish(Constants.BUILDING_DIRECT_EXCHANGE, rk, MessageProperties.PERSISTENT_BASIC, body);
         System.out.printf("[Agent %s] -> [%s] %s%n", agentName, rk, forwarded.type());
     }
 
@@ -276,17 +281,4 @@ public class RentalAgent {
         replyToClient(clientId, err);
     }
 
-    /**
-     * Safely attempts to send an error reply, suppressing any exceptions.
-     * Used as a fallback when already handling an error condition.
-     *
-     * @param clientId the ID of the client to notify
-     * @param message  the error message to send
-     */
-    private void safeErrorReply(String clientId, String message) {
-        try {
-            replyError(clientId, message);
-        } catch (IOException ignored) {
-        }
-    }
 }

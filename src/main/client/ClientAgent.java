@@ -49,9 +49,8 @@ public class ClientAgent {
         connection = RabbitMQConfig.createConnection(AppConfig.getRabbitHost(), AppConfig.getRabbitUser(), AppConfig.getRabbitPass());
         channel = connection.createChannel();
 
-        // create reply queue for this client
-        replyQueue = Constants.CLIENT_QUEUE_PREFIX + clientId;
-        channel.queueDeclare(replyQueue, false, false, true, null);
+        // create reply queue for this client using utility method
+        replyQueue = RabbitMQConfig.declareClientReplyQueue(channel, clientId);
 
         // listen for replies
         listenForReplies();
@@ -118,8 +117,10 @@ public class ClientAgent {
      */
     private void sendToAgents(WireMessage msg) throws IOException {
         byte[] body = MessageSerializer.serialize(msg);
-        channel.queueDeclare(Constants.AGENT_INBOX_QUEUE, false, false, false, null);
-        channel.basicPublish("", Constants.AGENT_INBOX_QUEUE, null, body);
+        // Ensure agent inbox exists (idempotent)
+        RabbitMQConfig.declareAgentInbox(channel);
+        // Make message persistent for fault tolerance
+        channel.basicPublish("", Constants.AGENT_INBOX_QUEUE, MessageProperties.PERSISTENT_BASIC, body);
         System.out.printf("[Client %s] -> Sent %s%n", clientId, msg.type());
     }
 
@@ -131,11 +132,21 @@ public class ClientAgent {
      */
     private void listenForReplies() throws IOException {
         DeliverCallback callback = (consumerTag, delivery) -> {
-            WireMessage msg = MessageSerializer.deserialize(delivery.getBody());
-            System.out.printf("[Client %s] <- [%s] %s%n", clientId, msg.type(), msg.payload());
-            replyBuffer.offer(msg);
+            try {
+                WireMessage msg = MessageSerializer.deserialize(delivery.getBody());
+                System.out.printf("[Client %s] <- [%s] %s%n", clientId, msg.type(), msg.payload());
+                replyBuffer.offer(msg);
+                // Acknowledge successful processing
+                channel.basicAck(delivery.getEnvelope().getDeliveryTag(), false);
+            } catch (Exception e) {
+                System.err.printf("[Client %s] Error processing message: %s%n", clientId, e.getMessage());
+                // Reject and requeue the message for retry
+                channel.basicNack(delivery.getEnvelope().getDeliveryTag(), false, true);
+            }
         };
-        channel.basicConsume(replyQueue, true, callback, consumerTag -> {});
+        // Set autoAck to false for manual acknowledgment
+        channel.basicConsume(replyQueue, false, callback, consumerTag -> {
+        });
     }
 
     /**

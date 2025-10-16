@@ -14,7 +14,7 @@ import java.io.IOException;
 import java.time.LocalDate;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
+import java.util.Timer;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -23,7 +23,7 @@ import java.util.concurrent.TimeoutException;
 /**
  * BuildingService is a standalone "Building" actor/process.
  * It owns availability and reservations for a single building instance.
- *
+ * <p>
  * Responsibilities:
  *  - Announce itself on a fanout exchange so agents can discover it.
  *  - Consume building-specific commands from cr.building.direct (rk=building.<name>).
@@ -46,6 +46,7 @@ public class BuildingService {
     // Total rooms booked per date (for availability check)
     private final Map<LocalDate, Integer> bookedPerDay = new ConcurrentHashMap<>();
     private final boolean verbose = false; // disable spam
+    private Timer scheduler;
 
     /**
      * Creates a new building service with the specified name and capacity.
@@ -72,6 +73,7 @@ public class BuildingService {
         declareTopology();
         announce(); // initial
         startPeriodicAnnounce();
+        startPendingCleanup();
         subscribeInbox();
 
         System.out.printf("[Building %s] up. Capacity/day=%d%n", buildingName, capacityPerDay);
@@ -101,6 +103,7 @@ public class BuildingService {
      */
     public void stop() throws IOException, java.util.concurrent.TimeoutException {
         if (announcer != null) announcer.shutdownNow();  // stop scheduler
+        if (scheduler != null) scheduler.cancel();  // stop cleanup timer
         if (channel != null) channel.close();
         if (connection != null) connection.close();
         System.out.printf("[Building %s] down.%n", buildingName);
@@ -116,17 +119,11 @@ public class BuildingService {
      * @throws IOException if topology setup fails
      */
     private void declareTopology() throws IOException {
-        // Fanout for building announcements
-        channel.exchangeDeclare(Constants.BUILDINGS_FANOUT_EXCHANGE, BuiltinExchangeType.FANOUT, false);
-
-        // Direct exchange for targeted building commands
-        channel.exchangeDeclare(Constants.BUILDING_DIRECT_EXCHANGE, BuiltinExchangeType.DIRECT, false);
+        // Declare common exchanges
+        RabbitMQConfig.declareCommonExchanges(channel);
 
         // Declare this building's inbox and bind with routing key "building.<name>"
-        String inbox = buildingInboxQueue();
-        channel.queueDeclare(inbox, false, false, false, null);
-        String rk = Constants.RK_BUILDING_PREFIX + buildingName;
-        channel.queueBind(inbox, Constants.BUILDING_DIRECT_EXCHANGE, rk);
+        RabbitMQConfig.declareAndBindBuildingInbox(channel, buildingName);
     }
 
     /**
@@ -156,17 +153,24 @@ public class BuildingService {
      */
     private void subscribeInbox() throws IOException {
         DeliverCallback cb = (tag, delivery) -> {
-            WireMessage msg = MessageSerializer.deserialize(delivery.getBody());
             try {
+                WireMessage msg = MessageSerializer.deserialize(delivery.getBody());
                 handle(msg);
+                // Acknowledge successful processing
+                channel.basicAck(delivery.getEnvelope().getDeliveryTag(), false);
             } catch (Exception e) {
                 System.err.printf("[Building %s] error: %s%n", buildingName, e.getMessage());
-                // Best-effort error back to client
-                String clientId = extractClientId(msg);
-                if (clientId != null) replyError(clientId, "Internal error at building: " + buildingName);
+                // Reject and requeue for retry
+                try {
+                    channel.basicNack(delivery.getEnvelope().getDeliveryTag(), false, true);
+                } catch (IOException ioEx) {
+                    System.err.printf("[Building %s] Failed to nack message: %s%n", buildingName, ioEx.getMessage());
+                }
             }
         };
-        channel.basicConsume(buildingInboxQueue(), true, cb, tag -> {});
+        // Set autoAck to false for manual acknowledgment
+        channel.basicConsume(buildingInboxQueue(), false, cb, tag -> {
+        });
         System.out.printf("[Building %s] listening on %s%n", buildingName, buildingInboxQueue());
     }
 
@@ -352,6 +356,7 @@ public class BuildingService {
         WireMessage out = new WireMessage(type, buildingName, payload);
         String q = Constants.CLIENT_QUEUE_PREFIX + clientId;
         channel.queueDeclare(q, false, false, true, null);
+        // Client reply queues are temporary, so we don't persist these messages
         channel.basicPublish("", q, null, MessageSerializer.serialize(out));
         System.out.printf("[Building %s] -> client %s : %s(%s)%n",
                 buildingName, clientId, type, payload.reservationNumber());
@@ -397,26 +402,28 @@ public class BuildingService {
         return id;
     }
 
-    /**
-     * Accepts either:
-     *  - String reservationId, or
-     *  - ReservationRequest (if you have that type), or
-     *  - Any wrapper you may use that contains a reservation id.
-     *
-     * @param payload the payload to extract from
-     * @return an Optional containing the reservation ID if found
-     */
-    private Optional<String> extractReservationId(Object payload) {
-        if (payload instanceof String s && !s.isBlank()) {
-            return Optional.of(s);
-        }
-        try {
-            Class<?> cls = payload.getClass();
-            var m = cls.getMethod("reservationNumber");
-            Object val = m.invoke(payload);
-            if (val instanceof String s && !s.isBlank()) return Optional.of(s);
-        } catch (Throwable ignored) {}
-        return Optional.empty();
+
+    private void startPendingCleanup() {
+        scheduler = new Timer(true); // daemon thread
+        scheduler.scheduleAtFixedRate(new java.util.TimerTask() {
+            @Override
+            public void run() {
+                reservations.values().stream()
+                        .filter(r -> status.get(r.id) == ReservationStatus.PENDING &&
+                                r.createdAt.plusSeconds(300).isBefore(java.time.Instant.now()))
+                        .forEach(r -> autoCancelReservation(r.id));
+            }
+        }, 60_000, 60_000); // delay and period in milliseconds
+    }
+
+    private void autoCancelReservation(String reservationId) {
+        Reservation r = reservations.get(reservationId);
+        if (r == null) return;
+
+        status.put(reservationId, ReservationStatus.CANCELED);
+        bookedPerDay.compute(r.date, (d, used) -> used == null ? 0 : Math.max(0, used - r.rooms));
+
+        System.out.printf("[Building %s] AUTO-CANCELED %s (timeout)%n", buildingName, reservationId);
     }
 
     /**
